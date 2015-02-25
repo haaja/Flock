@@ -209,7 +209,7 @@ public class LocalEventCollection extends AbstractLocalComponentCollection<Calen
   public void cleanComponent(Long localId) {
     Log.d(TAG, "cleanComponent() localId " + localId);
 
-    pendingOperations.add(ContentProviderOperation
+    operationQueue.queue(ContentProviderOperation
         .newUpdate(ContentUris.withAppendedId(getUriForComponents(), localId))
         .withValue(getColumnNameDirty(), 0)
         .withValue(CalendarContract.Events.SYNC_DATA2, null)
@@ -234,16 +234,18 @@ public class LocalEventCollection extends AbstractLocalComponentCollection<Calen
   }
 
   public void setVisible(Boolean isVisible) {
-    pendingOperations.add(ContentProviderOperation.newUpdate(getCollectionUri())
+    operationQueue.queue(ContentProviderOperation.newUpdate(getCollectionUri())
         .withValue(CalendarContract.Calendars.VISIBLE, isVisible ? 1 : 0)
         .build());
   }
 
   @Override
   public void setDisplayName(String displayName) {
-    pendingOperations.add(ContentProviderOperation.newUpdate(getCollectionUri())
-        .withValue(CalendarContract.Calendars.CALENDAR_DISPLAY_NAME, displayName)
-        .build());
+    operationQueue.queue(
+        ContentProviderOperation.newUpdate(getCollectionUri())
+            .withValue(CalendarContract.Calendars.CALENDAR_DISPLAY_NAME, displayName)
+            .build(),
+        displayName.getBytes().length);
   }
 
   public Optional<Integer> getColor() throws RemoteException {
@@ -266,7 +268,7 @@ public class LocalEventCollection extends AbstractLocalComponentCollection<Calen
   }
 
   public void setColor(int color) {
-    pendingOperations.add(ContentProviderOperation.newUpdate(getCollectionUri())
+    operationQueue.queue(ContentProviderOperation.newUpdate(getCollectionUri())
         .withValue(CalendarContract.Calendars.CALENDAR_COLOR, color)
         .build());
   }
@@ -290,9 +292,11 @@ public class LocalEventCollection extends AbstractLocalComponentCollection<Calen
 
   @Override
   public void setCTag(String cTag) throws RemoteException {
-    pendingOperations.add(ContentProviderOperation.newUpdate(getCollectionUri())
-        .withValue(COLUMN_NAME_COLLECTION_C_TAG, cTag)
-        .build());
+    operationQueue.queue(
+        ContentProviderOperation.newUpdate(getCollectionUri())
+            .withValue(COLUMN_NAME_COLLECTION_C_TAG, cTag)
+            .build(),
+        cTag.getBytes().length);
   }
 
   public Optional<Calendar> getTimeZone() throws RemoteException {
@@ -326,7 +330,7 @@ public class LocalEventCollection extends AbstractLocalComponentCollection<Calen
     VTimeZone vTimeZone = (VTimeZone) timezone.getComponent(VTimeZone.VTIMEZONE);
 
     if (vTimeZone != null && vTimeZone.getTimeZoneId() != null) {
-      pendingOperations.add(ContentProviderOperation.newUpdate(getCollectionUri())
+      operationQueue.queue(ContentProviderOperation.newUpdate(getCollectionUri())
           .withValue(CalendarContract.Calendars.CALENDAR_TIME_ZONE, vTimeZone.getTimeZoneId().getValue())
           .build());
     }
@@ -352,7 +356,7 @@ public class LocalEventCollection extends AbstractLocalComponentCollection<Calen
   }
 
   public void setOrder(Integer order) {
-    pendingOperations.add(ContentProviderOperation.newUpdate(getCollectionUri())
+    operationQueue.queue(ContentProviderOperation.newUpdate(getCollectionUri())
         .withValue(COLUMN_NAME_COLLECTION_ORDER, order)
         .build());
   }
@@ -501,30 +505,36 @@ public class LocalEventCollection extends AbstractLocalComponentCollection<Calen
   public int addComponent(ComponentETagPair<Calendar> component)
       throws RemoteException, InvalidRemoteComponentException
   {
-    ContentValues eventValues    = EventFactory.getValuesForEvent(this, localId, component);
-    int           event_op_index = pendingOperations.size();
+    int eventOpIndex = operationQueue.size();
 
-    pendingOperations.add(ContentProviderOperation.newInsert(getUriForComponents())
-        .withValues(eventValues)
-        .build());
+    ContentValues eventValues = EventFactory.getValuesForEvent(this, localId, component);
+    operationQueue.queue(
+        ContentProviderOperation.newInsert(getUriForComponents())
+            .withValues(eventValues)
+            .build(),
+        512);
 
     List<ContentValues> attendeeValues = EventFactory.getValuesForAttendees(component.getComponent());
     for (ContentValues attendee : attendeeValues) {
-      pendingOperations.add(ContentProviderOperation.newInsert(getUriForAttendees())
-          .withValues(attendee)
-          .withValueBackReference(CalendarContract.Attendees.EVENT_ID, event_op_index)
-          .build());
+      operationQueue.queue(
+          ContentProviderOperation.newInsert(getUriForAttendees())
+              .withValues(attendee)
+              .withValueBackReference(CalendarContract.Attendees.EVENT_ID, eventOpIndex)
+              .build(),
+          256);
     }
 
     List<ContentValues> reminderValues = EventFactory.getValuesForReminders(component.getComponent());
     for (ContentValues reminder : reminderValues) {
-      pendingOperations.add(ContentProviderOperation.newInsert(getUriForReminders())
-          .withValues(reminder)
-          .withValueBackReference(CalendarContract.Reminders.EVENT_ID, event_op_index)
-          .build());
+      operationQueue.queue(
+          ContentProviderOperation.newInsert(getUriForReminders())
+              .withValues(reminder)
+              .withValueBackReference(CalendarContract.Reminders.EVENT_ID, eventOpIndex)
+              .build(),
+          256);
     }
 
-    return pendingOperations.size() - event_op_index;
+    return operationQueue.size() - eventOpIndex;
   }
 
   @Override
@@ -533,19 +543,19 @@ public class LocalEventCollection extends AbstractLocalComponentCollection<Calen
     final String[]       SELECTION_ARGS = new String[]{remoteUId};
     final Optional<Long> LOCAL_ID       = getLocalIdForUid(remoteUId);
 
-    pendingOperations.add(ContentProviderOperation
+    operationQueue.queue(ContentProviderOperation
         .newDelete(getUriForComponents())
         .withSelection(SELECTION, SELECTION_ARGS)
         .withYieldAllowed(true)
         .build());
 
     if (LOCAL_ID.isPresent()) {
-      pendingOperations.add(ContentProviderOperation
+      operationQueue.queue(ContentProviderOperation
           .newDelete(ContentUris.withAppendedId(getUriForAttendees(), LOCAL_ID.get()))
           .withYieldAllowed(true)
           .build());
 
-      pendingOperations.add(ContentProviderOperation
+      operationQueue.queue(ContentProviderOperation
           .newDelete(ContentUris.withAppendedId(getUriForReminders(), LOCAL_ID.get()))
           .withYieldAllowed(true)
           .build());
@@ -673,43 +683,40 @@ public class LocalEventCollection extends AbstractLocalComponentCollection<Calen
                                             CalendarCopiedListener listener,
                                             boolean                forceFull)
   {
-    int operationSum = 0;
-    for (int operationCount : eventOperationCounts)
-      operationSum += operationCount;
+    if (toCollection.operationQueue.hasSpace() && !forceFull)
+      return false;
 
-    if (operationSum >= 100 || forceFull) {
-      try {
+    try {
 
-        int pendingCount = toCollection.pendingOperations.size();
-        int successCount = toCollection.commitPendingOperations();
-        int failCount    = pendingCount - successCount;
+      int pendingCount = toCollection.operationQueue.size();
+      int successCount = toCollection.commitPendingOperations();
+      int failCount    = pendingCount - successCount;
 
-        Log.d(TAG, pendingCount + " were pending " + successCount + " were committed");
+      Log.d(TAG, pendingCount + " were pending " + successCount + " were committed");
 
-        for (int operationCount : eventOperationCounts)
-          listener.onEventCopied(account, toCollection.getAccount(), localId);
+      int eventCount = 0;
+      while (eventCount++ < eventOperationCounts.size())
+        listener.onEventCopied(account, toCollection.getAccount(), localId);
 
-        if (failCount > 0)
-          Log.e(TAG, "failed to commit " + failCount + "" +
-                      "operations but no idea which events they're from!");
+      if (failCount > 0)
+        Log.e(TAG, "failed to commit " + failCount + "" +
+                    "operations but no idea which events they're from!");
 
-      } catch (OperationApplicationException e) {
+    } catch (OperationApplicationException e) {
 
-        for (int operationCount : eventOperationCounts)
-          listener.onEventCopyFailed(e, account, toCollection.getAccount(), localId);
-        toCollection.pendingOperations.clear();
+      int eventCount = 0;
+      while (eventCount++ < eventOperationCounts.size())
+        listener.onEventCopyFailed(e, account, toCollection.getAccount(), localId);
 
-      } catch (RemoteException e) {
+    } catch (RemoteException e) {
 
-        for (int operationCount : eventOperationCounts)
-          listener.onEventCopyFailed(e, account, toCollection.getAccount(), localId);
-        toCollection.pendingOperations.clear();
+      int eventCount = 0;
+      while (eventCount++ < eventOperationCounts.size())
+        listener.onEventCopyFailed(e, account, toCollection.getAccount(), localId);
 
-      }
-
-      return true;
     }
-    return false;
+
+    return true;
   }
 
   private void handleCopyRecurrenceExceptions(Account                toAccount,
@@ -771,7 +778,7 @@ public class LocalEventCollection extends AbstractLocalComponentCollection<Calen
       }
     }
 
-    if (toCollection.pendingOperations.size() > 0)
+    if (toCollection.operationQueue.size() > 0)
       handleCommitPendingIfFull(toCollection, eventOperationCounts, listener, true);
   }
 
@@ -860,7 +867,7 @@ public class LocalEventCollection extends AbstractLocalComponentCollection<Calen
       }
     }
 
-    if (toCollection.get().pendingOperations.size() > 0)
+    if (toCollection.get().operationQueue.size() > 0)
       handleCommitPendingIfFull(toCollection.get(), eventOperationCounts, listener, true);
 
     handleCopyRecurrenceExceptions(toAccount, toCollection.get(), listener);

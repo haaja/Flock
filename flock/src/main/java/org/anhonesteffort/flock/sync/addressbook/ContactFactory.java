@@ -582,6 +582,10 @@ public class ContactFactory {
     return Optional.absent();
   }
 
+  protected static Integer getSizeOfPhotoInBytes(ContentValues photoValues) {
+    return photoValues.getAsByteArray(ContactsContract.CommonDataKinds.Photo.PHOTO).length;
+  }
+
   protected static String[] getProjectionForOrganization() {
     return new String[] {
         ContactsContract.CommonDataKinds.Organization.COMPANY, // 00
@@ -870,6 +874,10 @@ public class ContactFactory {
       Note note = new Note(Base64.encodeBytes(noteText.getBytes()));
       vCard.addNote(note);
     }
+  }
+
+  protected static Integer getSizeOfNoteInBytes(ContentValues noteValues) {
+    return noteValues.getAsString(ContactsContract.CommonDataKinds.Note.NOTE).getBytes().length;
   }
 
   protected static String[] getProjectionForPostalAddress() {
